@@ -26,7 +26,7 @@ from homeassistant.helpers.typing import StateType
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN, SUBENTRY_TYPE_STOP, SUBENTRY_TYPE_VELOV_STATION
-from .coordinator import DataGrandLyonConfigEntry, DataGrandLyonCoordinator
+from .coordinator import DataGrandLyonConfigEntry, TclCoordinator, VelovCoordinator
 
 PARALLEL_UPDATES = 0
 
@@ -208,30 +208,34 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Data Grand Lyon sensor entities."""
-    coordinator = entry.runtime_data
+    runtime_data = entry.runtime_data
 
-    for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_STOP):
-        async_add_entities(
-            (
-                DataGrandLyonStopSensor(coordinator, subentry, description)
-                for description in STOP_SENSOR_DESCRIPTIONS
-            ),
-            config_subentry_id=subentry.subentry_id,
-        )
+    if runtime_data.tcl_coordinator is not None:
+        for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_STOP):
+            async_add_entities(
+                (
+                    DataGrandLyonStopSensor(
+                        runtime_data.tcl_coordinator, subentry, description
+                    )
+                    for description in STOP_SENSOR_DESCRIPTIONS
+                ),
+                config_subentry_id=subentry.subentry_id,
+            )
 
-    for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_VELOV_STATION):
-        async_add_entities(
-            (
-                DataGrandLyonVelovSensor(coordinator, subentry, description)
-                for description in VELOV_SENSOR_DESCRIPTIONS
-            ),
-            config_subentry_id=subentry.subentry_id,
-        )
+    if runtime_data.velov_coordinator is not None:
+        for subentry in entry.get_subentries_of_type(SUBENTRY_TYPE_VELOV_STATION):
+            async_add_entities(
+                (
+                    DataGrandLyonVelovSensor(
+                        runtime_data.velov_coordinator, subentry, description
+                    )
+                    for description in VELOV_SENSOR_DESCRIPTIONS
+                ),
+                config_subentry_id=subentry.subentry_id,
+            )
 
 
-class DataGrandLyonStopSensor(
-    CoordinatorEntity[DataGrandLyonCoordinator], SensorEntity
-):
+class DataGrandLyonStopSensor(CoordinatorEntity[TclCoordinator], SensorEntity):
     """Sensor for Data Grand Lyon stop departures."""
 
     _attr_has_entity_name = True
@@ -239,7 +243,7 @@ class DataGrandLyonStopSensor(
 
     def __init__(
         self,
-        coordinator: DataGrandLyonCoordinator,
+        coordinator: TclCoordinator,
         subentry: ConfigSubentry,
         description: DataGrandLyonStopSensorEntityDescription,
     ) -> None:
@@ -260,7 +264,7 @@ class DataGrandLyonStopSensor(
 
     def _get_departure(self) -> TclPassage | None:
         """Return the departure for this sensor's index, or None."""
-        departures = self.coordinator.data.stops.get(self._subentry_id, [])
+        departures = self.coordinator.data.get(self._subentry_id, [])
         index = self.entity_description.departure_index
         if index >= len(departures):
             return None
@@ -275,9 +279,7 @@ class DataGrandLyonStopSensor(
         return self.entity_description.value_fn(departure)
 
 
-class DataGrandLyonVelovSensor(
-    CoordinatorEntity[DataGrandLyonCoordinator], SensorEntity
-):
+class DataGrandLyonVelovSensor(CoordinatorEntity[VelovCoordinator], SensorEntity):
     """Sensor for Data Grand Lyon Vélo'v station."""
 
     _attr_has_entity_name = True
@@ -285,7 +287,7 @@ class DataGrandLyonVelovSensor(
 
     def __init__(
         self,
-        coordinator: DataGrandLyonCoordinator,
+        coordinator: VelovCoordinator,
         subentry: ConfigSubentry,
         description: DataGrandLyonVelovSensorEntityDescription,
     ) -> None:
@@ -307,7 +309,7 @@ class DataGrandLyonVelovSensor(
     @property
     def native_value(self) -> StateType | datetime:
         """Return the sensor value."""
-        station = self.coordinator.data.velov_stations.get(self._subentry_id)
+        station = self.coordinator.data.get(self._subentry_id)
         if station is None:
             return None
         return self.entity_description.value_fn(station)

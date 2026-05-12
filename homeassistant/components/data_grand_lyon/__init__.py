@@ -4,9 +4,16 @@ from data_grand_lyon_ha import DataGrandLyonClient
 
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .coordinator import DataGrandLyonConfigEntry, DataGrandLyonCoordinator
+from .const import LOGGER, SUBENTRY_TYPE_STOP, SUBENTRY_TYPE_VELOV_STATION
+from .coordinator import (
+    DataGrandLyonConfigEntry,
+    DataGrandLyonRuntimeData,
+    TclCoordinator,
+    VelovCoordinator,
+)
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]
 
@@ -22,10 +29,28 @@ async def async_setup_entry(
         password=entry.data[CONF_PASSWORD],
     )
 
-    coordinator = DataGrandLyonCoordinator(hass, entry, client)
-    await coordinator.async_config_entry_first_refresh()
+    runtime_data = DataGrandLyonRuntimeData()
 
-    entry.runtime_data = coordinator
+    if list(entry.get_subentries_of_type(SUBENTRY_TYPE_STOP)):
+        tcl = TclCoordinator(hass, entry, client)
+        try:
+            await tcl.async_config_entry_first_refresh()
+            runtime_data.tcl_coordinator = tcl
+        except ConfigEntryNotReady:
+            LOGGER.warning("TCL coordinator failed first refresh")
+
+    if list(entry.get_subentries_of_type(SUBENTRY_TYPE_VELOV_STATION)):
+        velov = VelovCoordinator(hass, entry, client)
+        try:
+            await velov.async_config_entry_first_refresh()
+            runtime_data.velov_coordinator = velov
+        except ConfigEntryNotReady:
+            LOGGER.warning("Vélo'v coordinator failed first refresh")
+
+    if runtime_data.tcl_coordinator is None and runtime_data.velov_coordinator is None:
+        raise ConfigEntryNotReady("All coordinators failed")
+
+    entry.runtime_data = runtime_data
 
     entry.async_on_unload(entry.add_update_listener(async_update_entry))
 

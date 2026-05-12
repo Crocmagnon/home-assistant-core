@@ -56,8 +56,6 @@
           }),
         ]),
       }),
-      'velov_stations': dict({
-      }),
     }),
   })
 # ---
@@ -93,8 +91,6 @@
       'version': 1,
     }),
     'coordinator_data': dict({
-      'stops': dict({
-      }),
       'velov_stations': dict({
         'velov_1': dict({
           'address': 'Place Bellecour',
