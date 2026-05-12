@@ -1,11 +1,16 @@
 """DataUpdateCoordinator for the Data Grand Lyon integration."""
 
-import asyncio
 from dataclasses import dataclass
 from datetime import timedelta
 
-from aiohttp import ClientResponseError
-from data_grand_lyon_ha import DataGrandLyonClient, TclPassage, VelovStation
+from aiohttp import ClientError, ClientResponseError
+from data_grand_lyon_ha import (
+    DataGrandLyonClient,
+    TclPassage,
+    VelovStation,
+    filter_tcl_passages_by_lines_stops,
+    find_velov_stations_by_ids,
+)
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
@@ -63,79 +68,63 @@ class DataGrandLyonCoordinator(DataUpdateCoordinator[DataGrandLyonCoordinatorDat
             self.config_entry.get_subentries_of_type(SUBENTRY_TYPE_VELOV_STATION)
         )
 
-        stop_tasks = [
-            self.client.get_tcl_passages(
-                ligne=subentry.data[CONF_LINE],
-                stop_id=subentry.data[CONF_STOP_ID],
-            )
-            for subentry in stop_subentries
-        ]
-
-        velov_tasks = [
-            self.client.get_velov_station(
-                station_id=subentry.data[CONF_STATION_ID],
-            )
-            for subentry in velov_subentries
-        ]
-
-        stop_results: list[list[TclPassage] | BaseException] = await asyncio.gather(
-            *stop_tasks, return_exceptions=True
-        )
-        velov_results: list[VelovStation | None | BaseException] = await asyncio.gather(
-            *velov_tasks, return_exceptions=True
-        )
-
-        total_subentries = len(stop_subentries) + len(velov_subentries)
+        total = bool(stop_subentries) + bool(velov_subentries)
         success_count = 0
 
         stops: dict[str, list[TclPassage]] = {}
-        for i, subentry in enumerate(stop_subentries):
-            result = stop_results[i]
-            if isinstance(result, BaseException):
-                if isinstance(result, ClientResponseError) and result.status in (
-                    401,
-                    403,
-                ):
-                    raise ConfigEntryAuthFailed(
-                        translation_domain=DOMAIN,
-                        translation_key="auth_failed",
-                    ) from result
-                LOGGER.warning(
-                    "Error fetching data for subentry %s: %s",
-                    subentry.subentry_id,
-                    result,
-                )
-                continue
-            stops[subentry.subentry_id] = result
-            success_count += 1
-
         velov_stations: dict[str, VelovStation] = {}
-        for i, subentry in enumerate(velov_subentries):
-            velov_result = velov_results[i]
-            if isinstance(velov_result, BaseException):
-                if isinstance(
-                    velov_result, ClientResponseError
-                ) and velov_result.status in (401, 403):
+
+        if stop_subentries:
+            try:
+                all_passages = await self.client.get_tcl_passages()
+                lines_stops = [
+                    (s.data[CONF_LINE], s.data[CONF_STOP_ID]) for s in stop_subentries
+                ]
+                filtered = filter_tcl_passages_by_lines_stops(all_passages, lines_stops)
+                key_to_subentry = {
+                    (s.data[CONF_LINE], s.data[CONF_STOP_ID]): s.subentry_id
+                    for s in stop_subentries
+                }
+                stops = {key_to_subentry[k]: v for k, v in filtered.items()}
+                success_count += 1
+            except ClientResponseError as err:
+                if err.status in (401, 403):
                     raise ConfigEntryAuthFailed(
                         translation_domain=DOMAIN,
                         translation_key="auth_failed",
-                    ) from velov_result
-                LOGGER.warning(
-                    "Error fetching data for subentry %s: %s",
-                    subentry.subentry_id,
-                    velov_result,
-                )
-                continue
-            success_count += 1
-            if velov_result is not None:
-                velov_stations[subentry.subentry_id] = velov_result
-            else:
-                LOGGER.warning(
-                    "Vélo'v station not found for subentry %s",
-                    subentry.subentry_id,
-                )
+                    ) from err
+                LOGGER.warning("Error fetching TCL passages: %s", err)
+            except (ClientError, TimeoutError) as err:
+                LOGGER.warning("Error fetching TCL passages: %s", err)
 
-        if total_subentries and not success_count:
+        if velov_subentries:
+            try:
+                all_stations = await self.client.get_velov_stations()
+                station_ids = [s.data[CONF_STATION_ID] for s in velov_subentries]
+                found = find_velov_stations_by_ids(all_stations, station_ids)
+                id_to_subentry = {
+                    s.data[CONF_STATION_ID]: s.subentry_id for s in velov_subentries
+                }
+                for station_id, station in found.items():
+                    if station is not None:
+                        velov_stations[id_to_subentry[station_id]] = station
+                    else:
+                        LOGGER.warning(
+                            "Vélo'v station not found for subentry %s",
+                            id_to_subentry[station_id],
+                        )
+                success_count += 1
+            except ClientResponseError as err:
+                if err.status in (401, 403):
+                    raise ConfigEntryAuthFailed(
+                        translation_domain=DOMAIN,
+                        translation_key="auth_failed",
+                    ) from err
+                LOGGER.warning("Error fetching Vélo'v stations: %s", err)
+            except (ClientError, TimeoutError) as err:
+                LOGGER.warning("Error fetching Vélo'v stations: %s", err)
+
+        if total and not success_count:
             raise UpdateFailed(
                 translation_domain=DOMAIN,
                 translation_key="update_failed_all",

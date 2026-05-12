@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 from zoneinfo import ZoneInfo
 
+from aiohttp import ClientConnectionError
 from data_grand_lyon_ha import TclPassage, TclPassageType
 import pytest
 from syrupy.assertion import SnapshotAssertion
@@ -20,8 +21,6 @@ from homeassistant.config_entries import ConfigSubentryData
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
-
-from .conftest import MOCK_DEPARTURES, MOCK_VELOV_STATION
 
 from tests.common import MockConfigEntry, snapshot_platform
 
@@ -131,7 +130,7 @@ async def test_coordinator_stop_fetch_error(
     mock_tcl_client: AsyncMock,
 ) -> None:
     """Test coordinator handles stop fetch errors gracefully."""
-    mock_tcl_client.get_tcl_passages.side_effect = ConnectionError("API down")
+    mock_tcl_client.get_tcl_passages.side_effect = ClientConnectionError("API down")
     mock_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -141,11 +140,11 @@ async def test_coordinator_stop_fetch_error(
     assert state is None
 
 
-async def test_coordinator_partial_failure(
+async def test_coordinator_tcl_fails_velov_succeeds(
     hass: HomeAssistant,
     mock_tcl_client: AsyncMock,
 ) -> None:
-    """Test coordinator succeeds when one stop subentry fails but another succeeds."""
+    """Test coordinator succeeds when TCL fails but Vélo'v succeeds."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Data Grand Lyon",
@@ -159,26 +158,21 @@ async def test_coordinator_partial_failure(
                 unique_id="C3_100",
             ),
             ConfigSubentryData(
-                data={CONF_LINE: "T1", CONF_STOP_ID: 200},
-                subentry_id="stop_2",
-                subentry_type=SUBENTRY_TYPE_STOP,
-                title="T1 - Stop 200",
-                unique_id="T1_200",
+                data={CONF_STATION_ID: 1001},
+                subentry_id="velov_1",
+                subentry_type=SUBENTRY_TYPE_VELOV_STATION,
+                title="Vélo'v 1001",
+                unique_id="velov_1001",
             ),
         ],
     )
-    # First stop fails, second succeeds
-    mock_tcl_client.get_tcl_passages.side_effect = [
-        ConnectionError("API down"),
-        MOCK_DEPARTURES,
-    ]
+    mock_tcl_client.get_tcl_passages.side_effect = ClientConnectionError("API down")
 
     entry.add_to_hass(hass)
     await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
 
-    # stop_2 sensors should work
-    state = hass.states.get("sensor.t1_stop_200_next_departure_1")
+    state = hass.states.get("sensor.velo_v_1001_available_bikes")
     assert state is not None
     assert state.state != "unavailable"
 
@@ -249,7 +243,7 @@ async def test_velov_sensor_no_data(
     mock_tcl_client: AsyncMock,
 ) -> None:
     """Test that Vélo'v sensors return unknown when station not found."""
-    mock_tcl_client.get_velov_station.return_value = None
+    mock_tcl_client.get_velov_stations.return_value = []
     mock_velov_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_velov_config_entry.entry_id)
     await hass.async_block_till_done()
@@ -265,48 +259,10 @@ async def test_coordinator_velov_fetch_error(
     mock_tcl_client: AsyncMock,
 ) -> None:
     """Test coordinator handles Vélo'v fetch errors gracefully."""
-    mock_tcl_client.get_velov_station.side_effect = ConnectionError("API down")
+    mock_tcl_client.get_velov_stations.side_effect = ClientConnectionError("API down")
     mock_velov_config_entry.add_to_hass(hass)
     await hass.config_entries.async_setup(mock_velov_config_entry.entry_id)
     await hass.async_block_till_done()
 
     state = hass.states.get("sensor.velo_v_1001_available_bikes")
     assert state is None
-
-
-async def test_coordinator_mixed_partial_failure(
-    hass: HomeAssistant,
-    mock_tcl_client: AsyncMock,
-) -> None:
-    """Test coordinator succeeds when stop fails but Vélo'v succeeds."""
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        title="Data Grand Lyon",
-        data={CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
-        subentries_data=[
-            ConfigSubentryData(
-                data={CONF_LINE: "C3", CONF_STOP_ID: 100},
-                subentry_id="stop_1",
-                subentry_type=SUBENTRY_TYPE_STOP,
-                title="C3 - Stop 100",
-                unique_id="C3_100",
-            ),
-            ConfigSubentryData(
-                data={CONF_STATION_ID: 1001},
-                subentry_id="velov_1",
-                subentry_type=SUBENTRY_TYPE_VELOV_STATION,
-                title="Vélo'v 1001",
-                unique_id="velov_1001",
-            ),
-        ],
-    )
-    mock_tcl_client.get_tcl_passages.side_effect = ConnectionError("API down")
-    mock_tcl_client.get_velov_station.return_value = MOCK_VELOV_STATION
-
-    entry.add_to_hass(hass)
-    await hass.config_entries.async_setup(entry.entry_id)
-    await hass.async_block_till_done()
-
-    state = hass.states.get("sensor.velo_v_1001_available_bikes")
-    assert state is not None
-    assert state.state != "unavailable"
